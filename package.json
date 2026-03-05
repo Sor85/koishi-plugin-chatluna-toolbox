@@ -8,6 +8,10 @@
     "lib"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sor85/koishi-plugin-chatluna-toolbox.git"
+  },
   "scripts": {
     "build": "tsup",
     "watch": "tsup --watch",
