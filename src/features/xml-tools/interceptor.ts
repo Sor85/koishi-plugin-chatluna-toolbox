@@ -18,7 +18,7 @@ export interface XmlInterceptorDeps {
   ctx: import("koishi").Context;
   config: Config;
   log?: LogFn;
-  onResponse: (response: string, session: Session | null) => void;
+  onResponse: (response: string, session: Session | null) => boolean;
 }
 
 export interface XmlInterceptorRuntime {
@@ -38,9 +38,12 @@ export function createXmlInterceptor(
     session: Session;
     timestamp: number;
   }> = [];
+  let responseSeq = 0;
+  const processedResponses = new Set<string>();
   let monitorHandle: (() => void) | null = null;
   let fastRetryHandle: (() => void) | null = null;
   let startupHandle: (() => void) | null = null;
+  const responseRetryHandles = new Map<string, () => void>();
   let activeService: CharacterService | null = null;
   let activeLogger: { debug?: (...args: unknown[]) => void } | null = null;
   let originalDebug: ((...args: unknown[]) => void) | null = null;
@@ -112,6 +115,55 @@ export function createXmlInterceptor(
       : resolved.session;
   };
 
+  const markProcessed = (responseId: string): void => {
+    processedResponses.add(responseId);
+    if (processedResponses.size > 100) {
+      const first = processedResponses.values().next().value;
+      if (first) processedResponses.delete(first);
+    }
+  };
+
+  const runResponse = (
+    responseId: string,
+    response: string,
+    session: Session | null,
+  ): boolean => {
+    const handled = onResponse(response, session);
+    if (handled) {
+      markProcessed(responseId);
+      const retryHandle = responseRetryHandles.get(responseId);
+      if (retryHandle) {
+        retryHandle();
+        responseRetryHandles.delete(responseId);
+      }
+    }
+    return handled;
+  };
+
+  const retryResponse = (responseId: string, response: string): void => {
+    if (
+      responseRetryHandles.has(responseId) ||
+      processedResponses.has(responseId)
+    )
+      return;
+    const handle = ctx.setTimeout(() => {
+      responseRetryHandles.delete(responseId);
+      if (processedResponses.has(responseId)) return;
+      const session = resolveSession();
+      if (!session) {
+        if (config.debugLogging) {
+          log?.("warn", "拦截到原始输出但缺少会话上下文，XML 工具不会执行", {
+            length: response.length,
+          });
+        }
+        runResponse(responseId, response, null);
+        return;
+      }
+      runResponse(responseId, response, session);
+    }, 200);
+    responseRetryHandles.set(responseId, handle);
+  };
+
   const attach = (): boolean => {
     const characterService = (
       ctx as unknown as { chatluna_character?: CharacterService }
@@ -156,13 +208,13 @@ export function createXmlInterceptor(
           return;
         const response = message.substring("model response: ".length);
         if (!response) return;
+        const responseId = `${Date.now()}:${responseSeq++}`;
         const session = resolveSession();
-        if (!session && config.debugLogging) {
-          log?.("warn", "拦截到原始输出但缺少会话上下文，XML 工具不会执行", {
-            length: response.length,
-          });
+        if (!session) {
+          retryResponse(responseId, response);
+          return;
         }
-        onResponse(response, session);
+        runResponse(responseId, response, session);
       };
       (wrapped as unknown as Record<string, unknown>)[RAW_INTERCEPTOR_TAG] =
         true;
@@ -242,6 +294,9 @@ export function createXmlInterceptor(
       }
       stopFastRetry();
       stopMonitor();
+      for (const handle of responseRetryHandles.values()) handle();
+      responseRetryHandles.clear();
+      processedResponses.clear();
       restore();
       sessionMap.clear();
       pendingSessions.length = 0;

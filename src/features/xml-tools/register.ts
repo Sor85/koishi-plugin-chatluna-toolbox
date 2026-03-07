@@ -32,11 +32,13 @@ export function registerXmlTools(deps: RegisterXmlToolsDeps): XmlToolsRuntime {
     log,
     onResponse: (response: string, session: Session | null) => {
       const actions = parseXmlActions(response);
+      let handled = false;
 
       if (config.enablePokeXmlTool && actions.pokeUserIds.length > 0) {
         if (!session) {
           log?.("warn", "检测到戳一戳标记但缺少会话上下文");
         } else {
+          handled = true;
           for (const userId of actions.pokeUserIds) {
             void sendPoke({ session, userId, protocol, log }).catch((error) => {
               log?.("warn", "XML 触发 poke 失败", error);
@@ -49,6 +51,7 @@ export function registerXmlTools(deps: RegisterXmlToolsDeps): XmlToolsRuntime {
         if (!session) {
           log?.("warn", "检测到表情标记但缺少会话上下文");
         } else {
+          handled = true;
           for (const item of actions.emojis) {
             void sendMsgEmoji({
               session,
@@ -67,6 +70,7 @@ export function registerXmlTools(deps: RegisterXmlToolsDeps): XmlToolsRuntime {
         if (!session) {
           log?.("warn", "检测到撤回标记但缺少会话上下文");
         } else {
+          handled = true;
           for (const messageId of actions.deleteMessageIds) {
             void sendDeleteMessage({ session, messageId, log }).catch(
               (error) => {
@@ -76,6 +80,8 @@ export function registerXmlTools(deps: RegisterXmlToolsDeps): XmlToolsRuntime {
           }
         }
       }
+
+      return handled;
     },
   });
 
